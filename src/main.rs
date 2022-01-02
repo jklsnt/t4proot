@@ -4,22 +4,27 @@ use rayon::prelude::*;
 use std::path::PathBuf;
 use rusqlite::{Connection, params};
 use env_logger::{Builder, Target};
-use std::fs::File;
 use serde_json::{json, to_string};
 
 
 struct Entry {
     hash: String,
     path: String,
-    contents: String,    
+    contents: String,
 }
 
 fn main() {
+
+    // initialize our logger
     Builder::new()
 	.target(Target::Stdout)
 	.filter(None, log::LevelFilter::Trace)
         .init();
+
+    // open a connection to our database
     let conn = Connection::open("notes.db").unwrap();
+
+    // create a table for our input files if it doesn't exist
     conn.execute(
 	"CREATE TABLE IF NOT EXISTS input_files (
              hash TEXT,
@@ -28,10 +33,11 @@ fn main() {
          )",
 	[],
     ).unwrap();
-	
-    
-    let (sink, source) = channel::<Entry>();        
-    let (tx, rx) = channel();    
+
+    let (sink, source) = channel::<Entry>(); // TODO @david add comments for these please
+    let (tx, rx) = channel();
+
+    // threading things: recursively traverse the notes directory and fetch all the files
     rayon::scope(|s| {
 	s.spawn(move |_| {
 	    for result in Walk::new("./notes") {
@@ -40,7 +46,7 @@ fn main() {
 			//log::trace!("Walker found path {}", entry.path().display());
 			if let Some(filetype) = entry.file_type() {
 			    if filetype.is_dir() { continue }
-			} else { log::error!("Could not fetch file type of {}.", entry.path().display()); }			
+			} else { log::error!("Could not fetch file type of {}.", entry.path().display()); }
 			tx.send(entry.into_path()).unwrap();
 		    },
 		    Err(e) => log::error!("Error during walk: {}", e),
@@ -56,8 +62,8 @@ fn main() {
 		).unwrap();
 	    }
 	});
-	rx.into_iter().par_bridge().map_with(sink, process_file).collect::<()>();	
-    });	   
+	rx.into_iter().par_bridge().map_with(sink, process_file).collect::<()>();
+    });
 }
 
 fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
