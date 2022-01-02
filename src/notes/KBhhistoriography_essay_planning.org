@@ -1,0 +1,61 @@
+:PROPERTIES:
+:ID:       03B0CA1E-7C86-4A05-BDE8-14B7ECA9B015
+:END:
+#+title: Historiography Essay Planning
+#+author: Houjun Liu
+
+
+* General Information
+  | Due Date | Topic               | Important Documents         |
+  |----------+---------------------+-----------------------------|
+  | 10/12    | American Revolution | - Ideological Origins       |
+  |          |                     | - Marketplace of Revolution |
+
+Basically, [[id:E10B5E4B-B7B1-4B51-9497-A2558A9CE11E][Causes for the Revolution]]. How? 
+
+* Prompt
+Synthesis about the causes of the Revolution! Have a counter argument...
+
+Was the Revolution more of a top-down or bottom-up process? In other words, did the motivation and ideology originate in the upper classes and then trickle down to the lower, or did it  spread among the lower classes and slowly spread to the upper? Or was this a dynamic process, and if so what propelled it?
+
+* Big Ideas
+- Thesis sets the course of the whole thesis; it's going to set the direct for argument/analysis
+- Try to fit the thesis to the context, not the other way around
+- Structure
+  - Intro: {"work on hook", historical context, thesis}
+  - Body: TEAeaeaea --- {topic/transition, {evidence, analysis}...}
+  - Conclusion: not a summary, but taking all the TEAs and get to significance
+- Get paper to proofreaders!
+- Diction
+  - Don't use the word it
+  - Don't have vague references
+  - Don't have passive voice
+- The Magic Words
+  - =although..., ...=
+  - =despite..., ...=
+
+* Claim Synthesis
+
+** Quotes Analysis
+
+*** Societal observations
+- Bottom Economical: [[id:C8245B16-8246-48DD-8F5F-F084CA158B3A][The slump in economy was a tangiable touchpoint for colonists w.r.t. adverse affects of British associations]]
+- Top Political: [[id:6CF85737-8207-4685-A1B3-96DC9009972D][Originially convinced that England will overcome the currpution, but it didn't]]
+- Shared: [[id:2534153A-941E-4FD9-A1B1-EAA8740FDC4B][John Wikes' election to the British parlament celebrated as a moment that potentially will lead to more freedoms/rights of colonists]] --- tied economic (stamp act) interests and parliamentary representation together
+
+*** ...which creates believes...
+- Top Political: [[id:817B14FC-37F0-4C01-ACBD-3F5872E64CA4][Believes that the process of subjugation signaled the end of the British constitutionality]]
+- Bottom Economical: [[id:0B379980-05CD-4F21-8004-310973BB5874][Wished to achieve higher autonomy of manufacturing (to avoid taxation?)]]
+- Shared: [[id:E980DA50-46A2-457C-AC2E-C429C242097F][Believed that the subjugation that took place after Stamp Act was a clear force of erasure of Freedom in both America and Britain]] --- tied economic events (taxes) and British despotism
+
+*** ...that makes rev happen
+- Top Political: [[id:738E99F2-5350-473A-8342-3C564084D209][One of Rev's goals was to restore the political freedoms erased by corruption]]
+- Bottom Economical: [[id:9E33E762-EDEB-444C-B96E-032DD06C469A][Overpurchasing and reliance in commercialism as a form of "slavish dependence"]]
+- Shared: [[id:99DAE177-7C8C-4E19-B2A2-3D094838E44F][the cause of America is one of self preservation and final defense]] --- defense of both economic interests and political ones at once   
+
+** Claim
+**Simultaneous, shared societal observations of subjugation between social classes --- when viewed as the intersection between aristocratic politics and common economics --- created the dynamic opportunity for the alignment of colonial interests that synthesizes the disregard for practicality by Bailyn and ignorance of ideology by Breen towards one of the collective increased need for independence against the British governmental systems: creating a portrayal of the revolution as a timely reactionary force that unified cross-class interests.**
+
+* Writing
+[[id:16363FE1-4269-44C9-979E-66D69816A3FD][Historiography Essay Writing]]
+
