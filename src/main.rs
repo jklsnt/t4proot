@@ -3,9 +3,10 @@ use std::sync::mpsc::{channel, Sender};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use rusqlite::{Connection, params};
-use env_logger::{Builder, Target};
 use serde_json::{json, to_string};
 use std::io::Write;
+use std::fs;
+use notify::{Watcher, RecursiveMode, watcher, DebouncedEvent};
 
 struct Entry {
     hash: String,
@@ -13,15 +14,18 @@ struct Entry {
     contents: String,
 }
 
-fn main() {
-    env_logger::init();
+/// Initializes the database if it does not exist.
+///
+/// Creates the `input_files` table, reads through all of the files in the notes
+/// directory, and inserts their hash+path+contents into the `input_files` table.
+fn init_db() {
     let conn = Connection::open("notes.db").unwrap();
     conn.execute(
 	"CREATE TABLE IF NOT EXISTS input_files (
-             hash TEXT,
-             path TEXT,
-             contents TEXT
-         )",
+	     hash TEXT,
+	     path TEXT,
+	     contents TEXT
+	 )",
 	[],
     ).unwrap();
 
@@ -31,9 +35,9 @@ fn main() {
     let (tx, rx) = channel();
 
     rayon::scope(|s| {
-	// Thread that recursively walks through input dir while respecting gitignore 
+	// Thread that recursively walks through input dir while respecting gitignore
 	s.spawn(move |_| {
-	    for result in Walk::new("./notes") {
+	    for result in Walk::new("notes") {
 		match result {
 		    Ok(entry) => {
 			log::trace!("Walker found path {}", entry.path().display());
@@ -60,25 +64,87 @@ fn main() {
 	// Read each path in parallel.
 	rx.into_iter().par_bridge().map_with(sink, process_file).collect::<()>();
     });
-
-    let mut stmt = conn.prepare("SELECT hash, path, contents FROM input_files").unwrap();
-    let file_iter = stmt.query_map([], |row| {
-	Ok(Entry{
-	    hash: row.get(0).unwrap(),
-	    path: row.get(1).unwrap(),
-	    contents: row.get(2).unwrap(),
-	})
-    }).unwrap();
-    file_iter.map(render_file).collect::<()>();
 }
 
+fn main() {
+    env_logger::init();
+    if !fs::metadata("notes.db").is_ok() {
+	init_db();
+    }
+
+    // Channel for receiving filesystem events
+    let (tx, rx) = channel();
+    let mut watcher = watcher(tx, std::time::Duration::from_millis(250)).unwrap();
+    watcher.watch("notes", RecursiveMode::Recursive).unwrap();
+    let mut revision_files: Vec<PathBuf> = Vec::new();
+    loop {
+	match rx.recv() {
+	    Ok(event) => {
+		match event {
+		    DebouncedEvent::Write(p) => {
+			log::trace!("Write to {} detected", p.display());
+			revision_files.push(p);
+		    },
+		    DebouncedEvent::Create(p) => {
+			log::trace!("Creation of {} detected", p.display());
+			revision_files.push(p);
+		    },
+		    DebouncedEvent::Rename(o, n) => {
+			log::trace!("Rename of {} to {} detected", o.display(), n.display());
+			revision_files.push(n);
+		    },
+		    _ => {
+			log::trace!("Other file event noticed");
+			log::trace!("Revisions pending: {:?}", revision_files);
+			process_revision(revision_files.clone());
+			revision_files.clear();
+		    }
+		}
+	    },
+	    Err(e) => log::error!("File watcher error: {:?}", e),
+	}	
+    }
+
+    // let conn = Connection::open("notes.db").unwrap();
+    // let mut stmt = conn.prepare("SELECT hash, path, contents FROM input_files").unwrap();
+    // let file_iter = stmt.query_map([], |row| {
+    //	Ok(Entry{
+    //	    hash: row.get(0).unwrap(),
+    //	    path: row.get(1).unwrap(),
+    //	    contents: row.get(2).unwrap(),
+    //	})
+    // }).unwrap();
+    // file_iter.map(render_file).collect::<()>();
+}
+
+fn process_revision(revision_files: Vec<PathBuf>) {
+    let ignore = ignore::gitignore::Gitignore::new("notes/.gitignore").0; // FIXME handle error
+    for path in revision_files {
+	if let ignore::Match::Ignore(_p) = ignore.matched(path.clone(), false) { continue; }
+	log::trace!("Processing {}", path.display());
+    }
+}
+
+/// Reads and hashes a file.
+///
+/// Should only really be called at database generation.
+///
+/// # Arguments
+/// * `sink` - A Sender to the thread responsible for writing to the database.
+/// * `path` - Path to the file to be processed.
+///
+/// # Examples
+/// ```
+/// use std::sync::mpsc::channel;
+/// let (tx, rx) = channel()
+/// process_file(tx, Path::new("foo.org").to_path_buf());
+/// ```
 fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
-    let path2 = path.clone(); // supremely dumb
-    let contents = std::fs::read_to_string(path).unwrap(); // TODO Super naive
-    let hash = seahash::hash(&contents.as_bytes());    
+    let contents = fs::read_to_string(path.clone()).unwrap(); // TODO Super naive
+    let hash = seahash::hash(&contents.as_bytes());
     sink.send(Entry {
 	hash: format!("{:016x}", hash),
-	path: path2.into_os_string().into_string().unwrap(),
+	path: path.into_os_string().into_string().unwrap(),
 	contents,
     }).unwrap();
 }
@@ -88,9 +154,9 @@ fn render_file(entry: Result<Entry, rusqlite::Error>) {
     let mut writer = Vec::new();
     let org = orgize::Org::parse(&entry.contents);
     org.write_html(&mut writer).unwrap();
-    println!("{}", String::from("./out") + &entry.path[7..entry.path.len()-3] + "html");
-    std::fs::create_dir("./out");
+    println!("{}", String::from("out") + &entry.path[7..entry.path.len()-3] + "html");
+    fs::create_dir("out");
     // FIXME Hardcoded constants bad
-    let mut file = std::fs::File::create(String::from("./out") + &entry.path[7..entry.path.len()-3] + "html").unwrap();
+    let mut file = fs::File::create(String::from("out") + &entry.path[7..entry.path.len()-3] + "html").unwrap();
     file.write_all(&writer);
 }
