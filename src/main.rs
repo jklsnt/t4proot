@@ -1,9 +1,15 @@
 use ignore::Walk;
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Sender};
 use rayon::prelude::*;
 use std::path::PathBuf;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use env_logger::{Builder, Target};
+
+struct Entry {
+    hash: String,
+    path: String,
+    contents: String,    
+}
 
 fn main() {
     Builder::new()
@@ -16,18 +22,13 @@ fn main() {
              hash TEXT,
              path TEXT,
              contents TEXT
-        )",
+         )",
 	[],
     ).unwrap();
-    let (tx, rx) = channel();
-
-    //    
-    //  If you're bored, please help me figure out why in the love of God `rx` would be dropped here
-    //  `tx` errors on the `send` method and that's defined to only ever error when the Receiver is deallocated.
-    //  Why is this happening. help help help
-    //  Ping me if you find out
-    //
+	
     
+    let (sink, source) = channel::<Entry>();        
+    let (tx, rx) = channel();    
     rayon::scope(|s| {
 	s.spawn(move |_| {
 	    for result in Walk::new("./notes") {
@@ -37,20 +38,33 @@ fn main() {
 			if let Some(filetype) = entry.file_type() {
 			    if filetype.is_dir() { continue }
 			} else { log::error!("Could not fetch file type of {}.", entry.path().display()); }			
-			tx.send(entry.into_path()).unwrap_or(log::error!("Could not send Entry's PathBuf to processing thread."));			
+			tx.send(entry.into_path()).unwrap();
 		    },
 		    Err(e) => log::error!("Error during walk: {}", e),
 		}
 	    }
 	});
-	rx.into_iter().par_bridge().map(process_file).collect::<()>();
+	s.spawn(move |_| {
+	    let writer = Connection::open("notes.db").unwrap();
+	    for i in source.into_iter() {
+		writer.execute(
+		    "INSERT INTO input_files (hash, path, contents) VALUES (?1, ?2, ?3)",
+		    params![i.hash, i.path, i.contents]
+		).unwrap();
+	    }
+	});
+	rx.into_iter().par_bridge().map_with(sink, process_file).collect::<()>();	
     });	   
 }
 
-fn process_file(path: PathBuf) {
-    // let conn = Connection::open("notes.db").unwrap();
+fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
+    let path2 = path.clone(); // supremely dumb
     let contents = std::fs::read_to_string(path).unwrap(); // TODO Super naive
     let hash = seahash::hash(&contents.as_bytes());
-    //conn.execute("INSERT INTO input_files VALUES 
+    log::trace!("Hashed contents of {} to get {:016x}.", path2.display(), hash);
+    sink.send(Entry {
+	hash: format!("{:016x}", hash),
+	path: path2.into_os_string().into_string().unwrap(),
+	contents,
+    }).unwrap();
 }
-
