@@ -78,7 +78,7 @@ fn main() {
     // Channel for receiving filesystem events
     let (tx, rx) = channel();
     let mut watcher = watcher(tx, std::time::Duration::from_millis(250))
-	.unwrap_or_else(|e| panic!("Failed to create watcher: {}", e));    
+	.unwrap_or_else(|e| panic!("Failed to create watcher: {}", e));
     watcher.watch("notes", RecursiveMode::Recursive)
 	.unwrap_or_else(|e| panic!("Failed to watch directory: {}", e));
     let mut revision_files: Vec<PathBuf> = Vec::new();
@@ -107,7 +107,7 @@ fn main() {
 		}
 	    },
 	    Err(e) => log::error!("File watcher error: {:?}", e),
-	}	
+	}
     }
 
     // let conn = Connection::open("notes.db").unwrap();
@@ -122,14 +122,33 @@ fn main() {
     // file_iter.map(render_file).collect::<()>();
 }
 
-fn process_revision(revision_files: Vec<PathBuf>) {
+fn process_revision(revision_files: Vec<PathBuf>) -> anyhow::Result<()> {
     let ignore = ignore::gitignore::Gitignore::new("notes/.gitignore").0; // FIXME handle error
     for path in revision_files {
-	if let ignore::Match::Ignore(_p) = ignore.matched(path.clone(), false) { continue; }	
+	if let ignore::Match::Ignore(_p) = ignore.matched(path.clone(), false) { continue; }
 	log::trace!("Processing {}", path.clone().display());
 	let contents = fs::read_to_string(path.clone()).unwrap(); // TODO Super naive
 	let hash = seahash::hash(&contents.as_bytes());
+	let conn = Connection::open("notes.db").unwrap();
+	let out = conn.query_row(
+	    "SELECT hash FROM input_files WHERE hash=(?1)",
+	    params![hash],
+	    |row| Ok(true),
+	);
+	if !out.unwrap_or(false) {
+	    match conn.execute(
+		"UPDATE input_files SET contents=?1 WHERE id=?2",
+		params![contents, hash]
+	    ) {
+		Ok(_) => 1,
+		Err(_) => conn.execute(
+		    "INSERT INTO input_files (hash, path, contents) VALUES (?1, ?2, ?3)",
+		    params![hash, path.into_os_string().into_string().unwrap(), contents]
+		).unwrap()
+	    };	    
+	}
     }
+    Ok(())
 }
 
 /// Reads and hashes a file, then sends to thread writing to db.
@@ -137,10 +156,12 @@ fn process_revision(revision_files: Vec<PathBuf>) {
 /// Should only really be called at database generation.
 ///
 /// # Arguments
+///
 /// * `sink` - A Sender to the thread responsible for writing to the database.
 /// * `path` - Path to the file to be processed.
 ///
 /// # Examples
+///
 /// ```
 /// use std::sync::mpsc::channel;
 /// let (tx, rx) = channel()
