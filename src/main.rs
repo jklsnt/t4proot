@@ -19,7 +19,8 @@ struct Entry {
 /// Creates the `input_files` table, reads through all of the files in the notes
 /// directory, and inserts their hash+path+contents into the `input_files` table.
 fn init_db() {
-    let conn = Connection::open("notes.db").unwrap();
+    let conn = Connection::open("notes.db")
+	.unwrap_or_else(|e| panic!("Cannot open database: {}", e));
     conn.execute(
 	"CREATE TABLE IF NOT EXISTS input_files (
 	     hash TEXT,
@@ -27,7 +28,7 @@ fn init_db() {
 	     contents TEXT
 	 )",
 	[],
-    ).unwrap();
+    ).unwrap_or_else(|e| panic!("Cannot create table: {}", e));
 
     // Channel for communication between threads reading files and thread that inserts into SQL db
     let (sink, source) = channel::<Entry>();
@@ -45,7 +46,8 @@ fn init_db() {
 			    if filetype.is_dir() { continue }
 			} else { log::error!("Could not fetch file type of {}.", entry.path().display()); }
 			// Send file path to file reader threads
-			tx.send(entry.into_path()).unwrap();
+			tx.send(entry.into_path())
+			    .unwrap_or_else(|e| log::error!("Walker unable to send path to reader thread: {}", e));
 		    },
 		    Err(e) => log::error!("Error during walk: {}", e),
 		}
@@ -53,12 +55,13 @@ fn init_db() {
 	});
 	// Thread that inserts paths into db sequentially.
 	s.spawn(move |_| {
-	    let writer = Connection::open("notes.db").unwrap();
+	    let writer = Connection::open("notes.db")
+		.unwrap_or_else(|e| panic!("Cannot open database: {}", e));
 	    for i in source.into_iter() {
 		writer.execute(
 		    "INSERT INTO input_files (hash, path, contents) VALUES (?1, ?2, ?3)",
 		    params![i.hash, i.path, i.contents]
-		).unwrap();
+		).unwrap_or_else(|e| {log::error!("Insertion of {} into db failed: {}", i.path, e); 0});
 	    }
 	});
 	// Read each path in parallel.
@@ -74,8 +77,10 @@ fn main() {
 
     // Channel for receiving filesystem events
     let (tx, rx) = channel();
-    let mut watcher = watcher(tx, std::time::Duration::from_millis(250)).unwrap();
-    watcher.watch("notes", RecursiveMode::Recursive).unwrap();
+    let mut watcher = watcher(tx, std::time::Duration::from_millis(250))
+	.unwrap_or_else(|e| panic!("Failed to create watcher: {}", e));    
+    watcher.watch("notes", RecursiveMode::Recursive)
+	.unwrap_or_else(|e| panic!("Failed to watch directory: {}", e));
     let mut revision_files: Vec<PathBuf> = Vec::new();
     loop {
 	match rx.recv() {
@@ -120,12 +125,14 @@ fn main() {
 fn process_revision(revision_files: Vec<PathBuf>) {
     let ignore = ignore::gitignore::Gitignore::new("notes/.gitignore").0; // FIXME handle error
     for path in revision_files {
-	if let ignore::Match::Ignore(_p) = ignore.matched(path.clone(), false) { continue; }
-	log::trace!("Processing {}", path.display());
+	if let ignore::Match::Ignore(_p) = ignore.matched(path.clone(), false) { continue; }	
+	log::trace!("Processing {}", path.clone().display());
+	let contents = fs::read_to_string(path.clone()).unwrap(); // TODO Super naive
+	let hash = seahash::hash(&contents.as_bytes());
     }
 }
 
-/// Reads and hashes a file.
+/// Reads and hashes a file, then sends to thread writing to db.
 ///
 /// Should only really be called at database generation.
 ///
