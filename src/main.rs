@@ -4,6 +4,9 @@ use rayon::prelude::*;
 use std::path::PathBuf;
 use rusqlite::{Connection, params};
 use env_logger::{Builder, Target};
+use std::fs::File;
+use serde_json::{json, to_string};
+
 
 struct Entry {
     hash: String,
@@ -34,7 +37,7 @@ fn main() {
 	    for result in Walk::new("./notes") {
 		match result {
 		    Ok(entry) => {
-			log::trace!("Walker found path {}", entry.path().display());
+			//log::trace!("Walker found path {}", entry.path().display());
 			if let Some(filetype) = entry.file_type() {
 			    if filetype.is_dir() { continue }
 			} else { log::error!("Could not fetch file type of {}.", entry.path().display()); }			
@@ -61,10 +64,48 @@ fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
     let path2 = path.clone(); // supremely dumb
     let contents = std::fs::read_to_string(path).unwrap(); // TODO Super naive
     let hash = seahash::hash(&contents.as_bytes());
-    log::trace!("Hashed contents of {} to get {:016x}.", path2.display(), hash);
+
+    // convert to string
+    let org = orgize::Org::parse(&contents);
+    println!("{}", to_string(&org).unwrap());
+
     sink.send(Entry {
 	hash: format!("{:016x}", hash),
 	path: path2.into_os_string().into_string().unwrap(),
 	contents,
     }).unwrap();
+    //let kill_me = o.headlines().first().headline_node();
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
