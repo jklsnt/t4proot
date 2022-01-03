@@ -7,6 +7,7 @@ use serde_json::{json, to_string};
 use std::io::Write;
 use std::fs;
 use notify::{Watcher, RecursiveMode, watcher, DebouncedEvent};
+use std::time::SystemTime;
 
 struct Entry {
     hash: String,
@@ -81,32 +82,34 @@ fn main() {
 	.unwrap_or_else(|e| panic!("Failed to create watcher: {}", e));
     watcher.watch("notes", RecursiveMode::Recursive)
 	.unwrap_or_else(|e| panic!("Failed to watch directory: {}", e));
-    let mut revision_files: Vec<PathBuf> = Vec::new();
     loop {
+	let mut revision_file: Option<PathBuf> = None;
 	match rx.recv() {
 	    Ok(event) => {
 		match event {
 		    DebouncedEvent::Write(p) => {
 			log::trace!("Write to {} detected", p.display());
-			revision_files.push(p);
+			revision_file = Some(p);
 		    },
 		    DebouncedEvent::Create(p) => {
 			log::trace!("Creation of {} detected", p.display());
-			revision_files.push(p);
+			revision_file = Some(p);
 		    },
 		    DebouncedEvent::Rename(o, n) => {
 			log::trace!("Rename of {} to {} detected", o.display(), n.display());
-			revision_files.push(n);
+			revision_file = Some(n);
 		    },
 		    _ => {
-			log::trace!("Other file event noticed");
-			log::trace!("Revisions pending: {:?}", revision_files);
-			process_revision(revision_files.clone());
-			revision_files.clear();
+			log::trace!("Other file event noticed");			
 		    }
 		}
 	    },
 	    Err(e) => log::error!("File watcher error: {:?}", e),
+	}
+	if let Some(p) = revision_file {
+	    let now = SystemTime::now();
+	    process_revision(p);
+	    log::trace!("Processed revision in {:?}.",  SystemTime::now().duration_since(now).unwrap());	
 	}
     }
 
@@ -122,32 +125,41 @@ fn main() {
     // file_iter.map(render_file).collect::<()>();
 }
 
-fn process_revision(revision_files: Vec<PathBuf>) -> anyhow::Result<()> {
+fn process_revision(path: PathBuf) -> anyhow::Result<()> {
     let ignore = ignore::gitignore::Gitignore::new("notes/.gitignore").0; // FIXME handle error
-    for path in revision_files {
-	if let ignore::Match::Ignore(_p) = ignore.matched(path.clone(), false) { continue; }
-	log::trace!("Processing {}", path.clone().display());
-	let contents = fs::read_to_string(path.clone()).unwrap(); // TODO Super naive
-	let hash = seahash::hash(&contents.as_bytes());
-	let conn = Connection::open("notes.db").unwrap();
-	let out = conn.query_row(
-	    "SELECT hash FROM input_files WHERE hash=(?1)",
-	    params![hash],
-	    |row| Ok(true),
-	);
-	if !out.unwrap_or(false) {
-	    match conn.execute(
-		"UPDATE input_files SET contents=?1 WHERE id=?2",
-		params![contents, hash]
-	    ) {
-		Ok(_) => 1,
-		Err(_) => conn.execute(
-		    "INSERT INTO input_files (hash, path, contents) VALUES (?1, ?2, ?3)",
-		    params![hash, path.into_os_string().into_string().unwrap(), contents]
-		).unwrap()
-	    };	    
-	}
+    if let ignore::Match::Ignore(_p) = ignore.matched(path.clone(), false) { return Ok(()); }
+    log::trace!("Processing {}", path.clone().display());
+    let file = fs::File::open(path.clone())?;
+    let contents = fs::read_to_string(path.clone()).unwrap(); // TODO Super naive
+    let hash = seahash::hash(&contents.as_bytes());
+    let conn = Connection::open("notes.db").unwrap();
+    let out = conn.query_row(
+	"SELECT hash FROM input_files WHERE hash=(?1)",
+	params![hash],
+	|row| Ok(true),
+    );
+    let path = path.into_os_string().into_string().unwrap();
+    if !out.unwrap_or(false) {
+	match conn.execute(
+	    "UPDATE input_files SET contents=?1 WHERE id=?2",
+	    params![contents, hash]
+	) {
+	    Ok(_) => 1,
+	    Err(_) => conn.execute(
+		"INSERT INTO input_files (hash, path, contents) VALUES (?1, ?2, ?3)",
+		params![format!("{:016x}", hash), path, contents]
+	    ).unwrap()
+	};
     }
+    
+    let mut writer = Vec::new();
+    let org = orgize::Org::parse(&contents);
+    org.write_html(&mut writer).unwrap();
+    fs::create_dir("out");
+    // FIXME Hardcoded constants bad
+    log::trace!("{}", String::from("out") + &path[40..path.len()-3] + "html");
+    let mut file = fs::File::create(String::from("out") + &path[40..path.len()-3] + "html").unwrap();
+    file.write_all(&writer);
     Ok(())
 }
 
