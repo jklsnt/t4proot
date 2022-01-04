@@ -3,12 +3,13 @@ use std::sync::mpsc::{channel, Sender};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use rusqlite::{Connection, params};
-use serde_json::{json, to_string};
+use serde_json::Value;
 use std::io::Write;
 use std::fs;
 use notify::{Watcher, RecursiveMode, watcher, DebouncedEvent};
 use std::time::SystemTime;
 
+#[derive(Debug)]
 struct Entry {
     hash: String,
     path: String,
@@ -68,6 +69,18 @@ fn init_db() {
 	// Read each path in parallel.
 	rx.into_iter().par_bridge().map_with(sink, process_file).collect::<()>();
     });
+    
+    let conn = Connection::open("notes.db").unwrap();
+    let mut stmt = conn.prepare("SELECT hash, path, contents FROM input_files").unwrap();
+    let file_iter = stmt.query_map([], |row| {
+    	Ok(Entry{
+    	    hash: row.get(0).unwrap(),
+    	    path: row.get(1).unwrap(),
+    	    contents: row.get(2).unwrap(),
+    	})
+    }).unwrap();
+    let files: Vec<Entry> = file_iter.filter_map(|x| x.ok()).collect();
+    files.par_iter().map(|e| extract_metadata(e)).collect::<Option<()>>();    
 }
 
 fn main() {
@@ -108,21 +121,10 @@ fn main() {
 	}
 	if let Some(p) = revision_file {
 	    let now = SystemTime::now();
-	    process_revision(p);
-	    log::trace!("Processed revision in {:?}.",  SystemTime::now().duration_since(now).unwrap());	
+	    process_revision(p).unwrap_or_else(|e| log::error!("Build of revision failed: {}", e));
+	    log::trace!("Processed revision in {:?}.", SystemTime::now().duration_since(now).unwrap());	
 	}
     }
-
-    // let conn = Connection::open("notes.db").unwrap();
-    // let mut stmt = conn.prepare("SELECT hash, path, contents FROM input_files").unwrap();
-    // let file_iter = stmt.query_map([], |row| {
-    //	Ok(Entry{
-    //	    hash: row.get(0).unwrap(),
-    //	    path: row.get(1).unwrap(),
-    //	    contents: row.get(2).unwrap(),
-    //	})
-    // }).unwrap();
-    // file_iter.map(render_file).collect::<()>();
 }
 
 fn process_revision(path: PathBuf) -> anyhow::Result<()> {
@@ -136,7 +138,7 @@ fn process_revision(path: PathBuf) -> anyhow::Result<()> {
     let out = conn.query_row(
 	"SELECT hash FROM input_files WHERE hash=(?1)",
 	params![hash],
-	|row| Ok(true),
+	|_row| Ok(true),
     );
     let path = path.into_os_string().into_string().unwrap();
     if !out.unwrap_or(false) {
@@ -155,11 +157,11 @@ fn process_revision(path: PathBuf) -> anyhow::Result<()> {
     let mut writer = Vec::new();
     let org = orgize::Org::parse(&contents);
     org.write_html(&mut writer).unwrap();
-    fs::create_dir("out");
+    fs::create_dir("out")?;
     // FIXME Hardcoded constants bad
     log::trace!("{}", String::from("out") + &path[40..path.len()-3] + "html");
     let mut file = fs::File::create(String::from("out") + &path[40..path.len()-3] + "html").unwrap();
-    file.write_all(&writer);
+    file.write_all(&writer)?;
     Ok(())
 }
 
@@ -183,20 +185,51 @@ fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
     let contents = fs::read_to_string(path.clone()).unwrap(); // TODO Super naive
     let hash = seahash::hash(&contents.as_bytes());
     sink.send(Entry {
-	hash: format!("{:016x}", hash),
+ 	hash: format!("{:016x}", hash),
 	path: path.into_os_string().into_string().unwrap(),
 	contents,
     }).unwrap();
 }
 
+fn extract_metadata(entry: &Entry) -> Option<()> {
+    let org = orgize::Org::parse(&entry.contents);
+    let root: Value = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();    
+    for i in root["children"].as_array()? {
+	if i["type"].as_str()? == "section" {
+	    for j in i["children"].as_array()? {
+		if j["type"].as_str()? == "drawer" {
+		    let id_string = j["children"].as_array()?[0]
+			["children"].as_array()?[0]["value"].as_str()?;
+		    let parsed = sscanf::scanf!(id_string, ":ID:       {}", String).unwrap();
+		    println!("{}", parsed);
+		}
+		else {println!("{}: {}", j["key"], j["value"]);}
+	    }
+	    break;
+	}
+    }
+    panic!();
+}
+
+
 fn render_file(entry: Result<Entry, rusqlite::Error>) {
     let entry = entry.unwrap();
-    let mut writer = Vec::new();
+    // let mut writer = Vec::new();
     let org = orgize::Org::parse(&entry.contents);
-    org.write_html(&mut writer).unwrap();
-    println!("{}", String::from("out") + &entry.path[7..entry.path.len()-3] + "html");
-    fs::create_dir("out");
-    // FIXME Hardcoded constants bad
-    let mut file = fs::File::create(String::from("out") + &entry.path[7..entry.path.len()-3] + "html").unwrap();
-    file.write_all(&writer);
+    let mut stack: Vec<Value> = Vec::new();
+    stack.push(serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap());
+    while stack.len() > 0 {
+	let cur = stack.pop().unwrap();
+	if cur["type"] == Value::String(String::from("link")) { println!("{:?}", cur["path"]) }
+	if let Some(children) = cur["children"].as_array() {	    
+	    for i in children {
+		stack.push(i.clone());
+	    }
+	}
+    }
+    // org.write_html(&mut writer).unwrap();
+    // fs::create_dir("out");
+    // // FIXME Hardcoded constants bad
+    // let mut file = fs::File::create(String::from("out") + &entry.path[7..entry.path.len()-3] + "html").unwrap();
+    // file.write_all(&writer);
 }
