@@ -8,6 +8,7 @@ use std::io::Write;
 use std::fs;
 use notify::{Watcher, RecursiveMode, watcher, DebouncedEvent};
 use std::time::SystemTime;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 struct Entry {
@@ -27,7 +28,8 @@ fn init_db() {
 	"CREATE TABLE IF NOT EXISTS input_files (
 	     hash TEXT,
 	     path TEXT,
-	     contents TEXT
+	     contents TEXT,
+             meta TEXT
 	 )",
 	[],
     ).unwrap_or_else(|e| panic!("Cannot create table: {}", e));
@@ -61,8 +63,8 @@ fn init_db() {
 		.unwrap_or_else(|e| panic!("Cannot open database: {}", e));
 	    for i in source.into_iter() {
 		writer.execute(
-		    "INSERT INTO input_files (hash, path, contents) VALUES (?1, ?2, ?3)",
-		    params![i.hash, i.path, i.contents]
+		    "INSERT INTO input_files (hash, path, contents, meta) VALUES (?1, ?2, ?3, ?4)",
+		    params![i.hash, i.path, i.contents, ""]
 		).unwrap_or_else(|e| {log::error!("Insertion of {} into db failed: {}", i.path, e); 0});
 	    }
 	});
@@ -79,8 +81,18 @@ fn init_db() {
     	    contents: row.get(2).unwrap(),
     	})
     }).unwrap();
+    let (metasink, metasource) = channel();
     let files: Vec<Entry> = file_iter.filter_map(|x| x.ok()).collect();
-    files.par_iter().map(|e| extract_metadata(e)).collect::<Option<()>>();    
+    files.par_iter().map_with(metasink, extract_metadata).collect::<Option<()>>();
+    std::thread::spawn(move || {
+	for i in metasource.into_iter() {
+	    let writer = Connection::open("notes.db").unwrap();
+	    writer.execute(
+		"UPDATE input_files SET meta=?1 WHERE hash=?2",
+		params![serde_json::to_string(&i.1).unwrap(), i.0]
+	    ).unwrap();
+	}
+    });
 }
 
 fn main() {
@@ -122,7 +134,7 @@ fn main() {
 	if let Some(p) = revision_file {
 	    let now = SystemTime::now();
 	    process_revision(p).unwrap_or_else(|e| log::error!("Build of revision failed: {}", e));
-	    log::trace!("Processed revision in {:?}.", SystemTime::now().duration_since(now).unwrap());	
+	    log::trace!("Processed revision in {:?}.", SystemTime::now().duration_since(now).unwrap());	    
 	}
     }
 }
@@ -143,13 +155,13 @@ fn process_revision(path: PathBuf) -> anyhow::Result<()> {
     let path = path.into_os_string().into_string().unwrap();
     if !out.unwrap_or(false) {
 	match conn.execute(
-	    "UPDATE input_files SET contents=?1 WHERE id=?2",
+	    "UPDATE input_files SET contents=?1 WHERE hash=?2",
 	    params![contents, hash]
 	) {
 	    Ok(_) => 1,
 	    Err(_) => conn.execute(
-		"INSERT INTO input_files (hash, path, contents) VALUES (?1, ?2, ?3)",
-		params![format!("{:016x}", hash), path, contents]
+		"INSERT INTO input_files (hash, path, contents, meta) VALUES (?1, ?2, ?3, ?4)",
+		params![format!("{:016x}", hash), path, contents, ""]
 	    ).unwrap()
 	};
     }
@@ -191,9 +203,10 @@ fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
     }).unwrap();
 }
 
-fn extract_metadata(entry: &Entry) -> Option<()> {
+fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry: &Entry) -> Option<()> {
     let org = orgize::Org::parse(&entry.contents);
-    let root: Value = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();    
+    let root: Value = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();
+    let mut meta: HashMap<String, String> = HashMap::new();
     for i in root["children"].as_array()? {
 	if i["type"].as_str()? == "section" {
 	    for j in i["children"].as_array()? {
@@ -201,16 +214,16 @@ fn extract_metadata(entry: &Entry) -> Option<()> {
 		    let id_string = j["children"].as_array()?[0]
 			["children"].as_array()?[0]["value"].as_str()?;
 		    let parsed = sscanf::scanf!(id_string, ":ID:       {}", String).unwrap();
-		    println!("{}", parsed);
+		    meta.insert("ID".to_string(), parsed);		    
 		}
-		else {println!("{}: {}", j["key"], j["value"]);}
+		else {meta.insert(j["key"].to_string(), j["value"].to_string());}
 	    }
 	    break;
 	}
     }
-    panic!();
+    sink.send((entry.hash.clone(), meta));
+    Some(())
 }
-
 
 fn render_file(entry: Result<Entry, rusqlite::Error>) {
     let entry = entry.unwrap();
