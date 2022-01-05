@@ -82,17 +82,26 @@ fn init_db() {
     	})
     }).unwrap();
     let (metasink, metasource) = channel();
-    let files: Vec<Entry> = file_iter.filter_map(|x| x.ok()).collect();
+    let files: Vec<Entry> = file_iter.filter_map(|x| x.ok()).collect();    
     files.par_iter().map_with(metasink, extract_metadata).collect::<Option<()>>();
-    std::thread::spawn(move || {
-	for i in metasource.into_iter() {
-	    let writer = Connection::open("notes.db").unwrap();
-	    writer.execute(
-		"UPDATE input_files SET meta=?1 WHERE hash=?2",
-		params![serde_json::to_string(&i.1).unwrap(), i.0]
-	    ).unwrap();
-	}
+    let mut ids = HashMap::new();
+    rayon::scope(|s| {
+	s.spawn(|_| {
+	    for i in metasource.into_iter() {
+		let writer = Connection::open("notes.db").unwrap();
+		writer.execute(
+		    "UPDATE input_files SET meta=?1 WHERE path=?2",
+		    params![serde_json::to_string(&i.1).unwrap(), i.0]
+		).unwrap();
+		if let Some(id) = i.1.get("ID") {
+		    ids.insert(id.clone(), i.0);
+		}
+	    }
+	});
     });
+    for i in files {
+	render_file(&ids, i);
+    }
 }
 
 fn main() {
@@ -165,16 +174,16 @@ fn process_revision(path: PathBuf) -> anyhow::Result<()> {
 	    ).unwrap()
 	};
     }
-    
-    let mut writer = Vec::new();
-    let org = orgize::Org::parse(&contents);
-    org.write_html(&mut writer).unwrap();
-    fs::create_dir("out")?;
-    // FIXME Hardcoded constants bad
-    log::trace!("{}", String::from("out") + &path[40..path.len()-3] + "html");
-    let mut file = fs::File::create(String::from("out") + &path[40..path.len()-3] + "html").unwrap();
-    file.write_all(&writer)?;
     Ok(())
+    // let mut writer = Vec::new();
+    // let org = orgize::Org::parse(&contents);
+    // org.write_html(&mut writer).unwrap();
+    // fs::create_dir("out")?;
+    // // FIXME Hardcoded constants bad
+    // log::trace!("{}", String::from("out") + &path[40..path.len()-3] + "html");
+    // let mut file = fs::File::create(String::from("out") + &path[40..path.len()-3] + "html").unwrap();
+    // file.write_all(&writer)?;
+    // Ok(())
 }
 
 /// Reads and hashes a file, then sends to thread writing to db.
@@ -198,12 +207,12 @@ fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
     let hash = seahash::hash(&contents.as_bytes());
     sink.send(Entry {
  	hash: format!("{:016x}", hash),
-	path: path.into_os_string().into_string().unwrap(),
+	path: path.strip_prefix("notes/").unwrap().to_str().unwrap().to_string(),
 	contents,
     }).unwrap();
 }
 
-fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry: &Entry) -> Option<()> {
+fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry: &Entry) -> Option<()> {    
     let org = orgize::Org::parse(&entry.contents);
     let root: Value = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();
     let mut meta: HashMap<String, String> = HashMap::new();
@@ -212,37 +221,45 @@ fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry:
 	    for j in i["children"].as_array()? {
 		if j["type"].as_str()? == "drawer" {
 		    let id_string = j["children"].as_array()?[0]
-			["children"].as_array()?[0]["value"].as_str()?;
-		    let parsed = sscanf::scanf!(id_string, ":ID:       {}", String).unwrap();
-		    meta.insert("ID".to_string(), parsed);		    
+			["children"].as_array()?[0]["value"].as_str()?;		    
+		    if let Some(parsed) = sscanf::scanf!(id_string, ":ID:       {}", String) {			
+			meta.insert("ID".to_string(), parsed);
+		    }
 		}
 		else {meta.insert(j["key"].to_string(), j["value"].to_string());}
 	    }
 	    break;
 	}
     }
-    sink.send((entry.hash.clone(), meta));
+    sink.send((entry.path.clone(), meta));
     Some(())
 }
 
-fn render_file(entry: Result<Entry, rusqlite::Error>) {
-    let entry = entry.unwrap();
-    // let mut writer = Vec::new();
+fn render_file(ids: &HashMap<String, String>, entry: Entry) {
     let org = orgize::Org::parse(&entry.contents);
     let mut stack: Vec<Value> = Vec::new();
-    stack.push(serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap());
+    let root = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap()
+    stack.push(root);
     while stack.len() > 0 {
 	let cur = stack.pop().unwrap();
-	if cur["type"] == Value::String(String::from("link")) { println!("{:?}", cur["path"]) }
+	if cur["type"] == Value::String(String::from("link")) {
+	    if let Some(id) = sscanf::scanf!(cur["path"].as_str().unwrap(), "id:{}", String) {
+		if let Some(file) = ids.get(&id) {
+		    cur["path"] = Value::String(String::from("file:")+file);
+		}
+	    }
+	}
 	if let Some(children) = cur["children"].as_array() {	    
 	    for i in children {
 		stack.push(i.clone());
 	    }
 	}
     }
-    // org.write_html(&mut writer).unwrap();
-    // fs::create_dir("out");
-    // // FIXME Hardcoded constants bad
-    // let mut file = fs::File::create(String::from("out") + &entry.path[7..entry.path.len()-3] + "html").unwrap();
-    // file.write_all(&writer);
+    let mut writer = Vec::new();
+    let org: orgize::Org = serde_json::from_value(root).unwrap();
+    org.write_html(&mut writer).unwrap();
+    fs::create_dir("out");
+    // FIXME Hardcoded constants bad
+    let mut file = fs::File::create(String::from("out/") + &entry.path[..entry.path.len()-3] + "html").unwrap();
+    file.write_all(&writer);
 }
