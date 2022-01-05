@@ -9,6 +9,7 @@ use std::fs;
 use notify::{Watcher, RecursiveMode, watcher, DebouncedEvent};
 use std::time::SystemTime;
 use std::collections::HashMap;
+use orgize::elements::*;
 
 #[derive(Debug)]
 struct Entry {
@@ -29,7 +30,7 @@ fn init_db() {
 	     hash TEXT,
 	     path TEXT,
 	     contents TEXT,
-             meta TEXT
+	     meta TEXT
 	 )",
 	[],
     ).unwrap_or_else(|e| panic!("Cannot create table: {}", e));
@@ -71,23 +72,27 @@ fn init_db() {
 	// Read each path in parallel.
 	rx.into_iter().par_bridge().map_with(sink, process_file).collect::<()>();
     });
-    
+
     let conn = Connection::open("notes.db").unwrap();
     let mut stmt = conn.prepare("SELECT hash, path, contents FROM input_files").unwrap();
     let file_iter = stmt.query_map([], |row| {
-    	Ok(Entry{
-    	    hash: row.get(0).unwrap(),
-    	    path: row.get(1).unwrap(),
-    	    contents: row.get(2).unwrap(),
-    	})
+	Ok(Entry{
+	    hash: row.get(0).unwrap(),
+	    path: row.get(1).unwrap(),
+	    contents: row.get(2).unwrap(),
+	})
     }).unwrap();
     let (metasink, metasource) = channel();
-    let files: Vec<Entry> = file_iter.filter_map(|x| x.ok()).collect();    
+    let files: Vec<Entry> = file_iter.filter_map(|x| x.ok()).collect();
     files.par_iter().map_with(metasink, extract_metadata).collect::<Option<()>>();
     let mut ids = HashMap::new();
     rayon::scope(|s| {
 	s.spawn(|_| {
 	    for i in metasource.into_iter() {
+		for j in &i.1 {
+		    println!("{} {}", j.0, j.1);
+		}
+		println!("");
 		let writer = Connection::open("notes.db").unwrap();
 		writer.execute(
 		    "UPDATE input_files SET meta=?1 WHERE path=?2",
@@ -134,7 +139,7 @@ fn main() {
 			revision_file = Some(n);
 		    },
 		    _ => {
-			log::trace!("Other file event noticed");			
+			log::trace!("Other file event noticed");
 		    }
 		}
 	    },
@@ -143,7 +148,7 @@ fn main() {
 	if let Some(p) = revision_file {
 	    let now = SystemTime::now();
 	    process_revision(p).unwrap_or_else(|e| log::error!("Build of revision failed: {}", e));
-	    log::trace!("Processed revision in {:?}.", SystemTime::now().duration_since(now).unwrap());	    
+	    log::trace!("Processed revision in {:?}.", SystemTime::now().duration_since(now).unwrap());
 	}
     }
 }
@@ -206,60 +211,83 @@ fn process_file(sink: &mut Sender<Entry>, path: PathBuf) {
     let contents = fs::read_to_string(path.clone()).unwrap(); // TODO Super naive
     let hash = seahash::hash(&contents.as_bytes());
     sink.send(Entry {
- 	hash: format!("{:016x}", hash),
+	hash: format!("{:016x}", hash),
 	path: path.strip_prefix("notes/").unwrap().to_str().unwrap().to_string(),
 	contents,
     }).unwrap();
 }
 
-fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry: &Entry) -> Option<()> {    
-    let org = orgize::Org::parse(&entry.contents);
-    let root: Value = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();
+fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry: &Entry) -> Option<()> {
     let mut meta: HashMap<String, String> = HashMap::new();
-    for i in root["children"].as_array()? {
-	if i["type"].as_str()? == "section" {
-	    for j in i["children"].as_array()? {
-		if j["type"].as_str()? == "drawer" {
-		    let id_string = j["children"].as_array()?[0]
-			["children"].as_array()?[0]["value"].as_str()?;		    
-		    if let Some(parsed) = sscanf::scanf!(id_string, ":ID:       {}", String) {			
-			meta.insert("ID".to_string(), parsed);
+    let org = orgize::Org::parse(&entry.contents);
+    let arena = org.arena();
+    if let Some(section) = org.document().section_node() {
+	for i in section.children(arena) {
+	    match arena.get(i).unwrap().get() {
+		Element::Drawer(d) => {
+		    for j in i.children(arena) {
+			for k in j.children(arena) {
+			    if let Element::Text{ value } = arena.get(k).unwrap().get() {
+				if let Some(parsed) = sscanf::scanf!(value, ":ID:       {}", String) {
+				    meta.insert("ID".to_string(), parsed);
+				}
+			    }
+			}
 		    }
-		}
-		else {meta.insert(j["key"].to_string(), j["value"].to_string());}
+		},
+		Element::Keyword(k) => {meta.insert(k.key.to_string().to_uppercase(), k.value.to_string());},
+		_ => (),
 	    }
-	    break;
+	    // println!("{:?}", arena.get(i).unwrap().get());
+	    // println!("{:?}", arena.get(i.children(arena)[0]).unwrap().get());
 	}
     }
+    // let root: Value = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();
+    // let mut meta: HashMap<String, String> = HashMap::new();
+    // for i in root["children"].as_array()? {
+    //	if i["type"].as_str()? == "section" {
+    //	    for j in i["children"].as_array()? {
+    //		if j["type"].as_str()? == "drawer" {
+    //		    let id_string = j["children"].as_array()?[0]
+    //			["children"].as_array()?[0]["value"].as_str()?;
+    //		    if let Some(parsed) = sscanf::scanf!(id_string, ":ID:       {}", String) {
+    //			meta.insert("ID".to_string(), parsed);
+    //		    }
+    //		}
+    //		else {meta.insert(j["key"].to_string(), j["value"].to_string());}
+    //	    }
+    //	    break;
+    //	}
+    // }
     sink.send((entry.path.clone(), meta));
     Some(())
 }
 
 fn render_file(ids: &HashMap<String, String>, entry: Entry) {
-    let org = orgize::Org::parse(&entry.contents);
-    let mut stack: Vec<Value> = Vec::new();
-    let root = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap()
-    stack.push(root);
-    while stack.len() > 0 {
-	let cur = stack.pop().unwrap();
-	if cur["type"] == Value::String(String::from("link")) {
-	    if let Some(id) = sscanf::scanf!(cur["path"].as_str().unwrap(), "id:{}", String) {
-		if let Some(file) = ids.get(&id) {
-		    cur["path"] = Value::String(String::from("file:")+file);
-		}
-	    }
-	}
-	if let Some(children) = cur["children"].as_array() {	    
-	    for i in children {
-		stack.push(i.clone());
-	    }
-	}
-    }
-    let mut writer = Vec::new();
-    let org: orgize::Org = serde_json::from_value(root).unwrap();
-    org.write_html(&mut writer).unwrap();
-    fs::create_dir("out");
-    // FIXME Hardcoded constants bad
-    let mut file = fs::File::create(String::from("out/") + &entry.path[..entry.path.len()-3] + "html").unwrap();
-    file.write_all(&writer);
+    // let org = orgize::Org::parse(&entry.contents);
+    // let mut stack: Vec<Value> = Vec::new();
+    // let root = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();
+    // stack.push(root);
+    // while stack.len() > 0 {
+    //	let cur = stack.pop().unwrap();
+    //	if cur["type"] == Value::String(String::from("link")) {
+    //	    if let Some(id) = sscanf::scanf!(cur["path"].as_str().unwrap(), "id:{}", String) {
+    //		if let Some(file) = ids.get(&id) {
+    //		    cur["path"] = Value::String(String::from("file:")+file);
+    //		}
+    //	    }
+    //	}
+    //	if let Some(children) = cur["children"].as_array() {
+    //	    for i in children {
+    //		stack.push(i.clone());
+    //	    }
+    //	}
+    // }
+    // let mut writer = Vec::new();
+    // let org: orgize::Org = serde_json::from_value(root).unwrap();
+    // org.write_html(&mut writer).unwrap();
+    // fs::create_dir("out");
+    // // FIXME Hardcoded constants bad
+    // let mut file = fs::File::create(String::from("out/") + &entry.path[..entry.path.len()-3] + "html").unwrap();
+    // file.write_all(&writer);
 }
