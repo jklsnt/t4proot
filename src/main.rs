@@ -23,6 +23,7 @@ struct Entry {
 /// Creates the `input_files` table, reads through all of the files in the notes
 /// directory, and inserts their hash+path+contents into the `input_files` table.
 fn init_db() {
+    let now = SystemTime::now();
     let conn = Connection::open("notes.db")
 	.unwrap_or_else(|e| panic!("Cannot open database: {}", e));
     conn.execute(
@@ -89,10 +90,6 @@ fn init_db() {
     rayon::scope(|s| {
 	s.spawn(|_| {
 	    for i in metasource.into_iter() {
-		for j in &i.1 {
-		    println!("{} {}", j.0, j.1);
-		}
-		println!("");
 		let writer = Connection::open("notes.db").unwrap();
 		writer.execute(
 		    "UPDATE input_files SET meta=?1 WHERE path=?2",
@@ -107,6 +104,7 @@ fn init_db() {
     for i in files {
 	render_file(&ids, i);
     }
+    log::trace!("Built in {:?}.", SystemTime::now().duration_since(now).unwrap());
 }
 
 fn main() {
@@ -263,31 +261,48 @@ fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry:
     Some(())
 }
 
-fn render_file(ids: &HashMap<String, String>, entry: Entry) {
-    // let org = orgize::Org::parse(&entry.contents);
-    // let mut stack: Vec<Value> = Vec::new();
-    // let root = serde_json::from_str(&serde_json::to_string(&org).unwrap()).unwrap();
-    // stack.push(root);
-    // while stack.len() > 0 {
-    //	let cur = stack.pop().unwrap();
-    //	if cur["type"] == Value::String(String::from("link")) {
-    //	    if let Some(id) = sscanf::scanf!(cur["path"].as_str().unwrap(), "id:{}", String) {
-    //		if let Some(file) = ids.get(&id) {
-    //		    cur["path"] = Value::String(String::from("file:")+file);
-    //		}
-    //	    }
-    //	}
-    //	if let Some(children) = cur["children"].as_array() {
-    //	    for i in children {
-    //		stack.push(i.clone());
-    //	    }
-    //	}
-    // }
-    // let mut writer = Vec::new();
-    // let org: orgize::Org = serde_json::from_value(root).unwrap();
-    // org.write_html(&mut writer).unwrap();
-    // fs::create_dir("out");
-    // // FIXME Hardcoded constants bad
-    // let mut file = fs::File::create(String::from("out/") + &entry.path[..entry.path.len()-3] + "html").unwrap();
-    // file.write_all(&writer);
+fn render_file(ids: &HashMap<String, String>, entry: Entry) -> Option<()> {
+    let mut org = orgize::Org::parse(&entry.contents);
+    let mut stack = Vec::new();
+    stack.push(org.document().section_node()?);
+    while stack.len() > 0 {
+	let cur = stack.pop()?;
+	let children: Vec<orgize::indextree::NodeId> = cur.children(org.arena()).collect();
+	for i in children {
+	    let mut elem = org.arena_mut().get_mut(i)?.get_mut();
+	    match elem {
+		Element::Link(l) => if let Some(s) = sscanf::scanf!(l.path, "id:{}", String) {
+		    if let Some(path) = ids.get(&s) {
+			*elem = Element::Link(orgize::elements::Link {path: (String::from("file:")+path).into(), desc: l.desc.clone()});\
+		    }
+		},
+		_ => (),
+	    }
+	    stack.push(i.clone());
+	}
+    }
+    let mut stack = Vec::new();
+    stack.push(org.document().section_node()?);
+    while stack.len() > 0 {
+	let cur = stack.pop()?;
+	let children: Vec<orgize::indextree::NodeId> = cur.children(org.arena()).collect();
+	for i in children {
+	    let mut elem = org.arena().get(i)?;
+	    println!("{:?}", elem);
+	    match elem {
+		Element::Link(l) => println!("{:?}", l),
+		_ => (),
+	    }
+	    stack.push(i.clone());
+	}
+    }
+
+    println!("{:?}\n\n{}\n\n-----------\n\n", org.arena(), serde_json::to_string(&org).unwrap());
+    let mut writer = Vec::new();
+    org.write_html(&mut writer).unwrap();
+    fs::create_dir("out");
+    // FIXME Hardcoded constants bad
+    let mut file = fs::File::create(String::from("out/") + &entry.path[..entry.path.len()-3] + "html").unwrap();
+    file.write_all(&writer);
+    Some(())
 }
