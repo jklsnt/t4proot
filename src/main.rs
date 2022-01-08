@@ -96,7 +96,7 @@ fn init_db() {
 		    params![serde_json::to_string(&i.1).unwrap(), i.0]
 		).unwrap();
 		if let Some(id) = i.1.get("ID") {
-		    ids.insert(id.clone(), i.0);
+		    ids.insert(id.clone(), sscanf::scanf!(i.0, "{}.org", String).unwrap());
 		}
 	    }
 	});
@@ -261,43 +261,52 @@ fn extract_metadata(sink: &mut Sender<(String, HashMap<String, String>)>, entry:
     Some(())
 }
 
-fn render_file(ids: &HashMap<String, String>, entry: Entry) -> Option<()> {
-    let mut org = orgize::Org::parse(&entry.contents);
-    let mut stack = Vec::new();
-    stack.push(org.document().section_node()?);
+fn recursively_mutate_links_in_node(node: orgize::indextree::NodeId, org: &mut orgize::Org, ids: &HashMap<String, String>) -> Option<()> {
+    let mut stack: Vec<orgize::indextree::NodeId> = Vec::new();
+    stack.push(node);    
     while stack.len() > 0 {
 	let cur = stack.pop()?;
+	let mut elem = org.arena_mut().get_mut(cur)?.get_mut();
 	let children: Vec<orgize::indextree::NodeId> = cur.children(org.arena()).collect();
 	for i in children {
 	    let mut elem = org.arena_mut().get_mut(i)?.get_mut();
 	    match elem {
 		Element::Link(l) => if let Some(s) = sscanf::scanf!(l.path, "id:{}", String) {
-		    if let Some(path) = ids.get(&s) {
-			*elem = Element::Link(orgize::elements::Link {path: (String::from("file:")+path).into(), desc: l.desc.clone()});\
+		    println!("{}", l.path);
+		    if let Some(path) = ids.get(&s) {			
+			*elem = Element::Link(orgize::elements::Link {
+			    path: (String::from("file:")+path+&".html".to_string()).into(),
+			    desc: l.desc.clone()
+			});
 		    }
-		},
+		},		
 		_ => (),
 	    }
 	    stack.push(i.clone());
 	}
     }
-    let mut stack = Vec::new();
-    stack.push(org.document().section_node()?);
+    Some(())
+}
+
+
+fn render_file(ids: &HashMap<String, String>, entry: Entry) -> Option<()> {
+    println!("{}", entry.path);
+    let mut org = orgize::Org::parse(&entry.contents);
+    recursively_mutate_links_in_node(org.document().section_node()?, &mut org, ids);
+    let mut stack: Vec<orgize::Headline> = Vec::new();
+    let children: Vec<orgize::Headline> = org.headlines().collect();
+    for i in children { stack.push(i); }
     while stack.len() > 0 {
 	let cur = stack.pop()?;
-	let children: Vec<orgize::indextree::NodeId> = cur.children(org.arena()).collect();
-	for i in children {
-	    let mut elem = org.arena().get(i)?;
-	    println!("{:?}", elem);
-	    match elem {
-		Element::Link(l) => println!("{:?}", l),
-		_ => (),
-	    }
-	    stack.push(i.clone());
-	}
+	println!("Processing headline: {}", cur.title(&org).raw);
+	
+	recursively_mutate_links_in_node(cur.title_node(), &mut org, ids);
+	recursively_mutate_links_in_node(cur.section_node()?, &mut org, ids);
+	let children: Vec<orgize::Headline> = cur.children(&org).collect();
+	println!("{}", children.len());
+	for i in children { stack.push(i); }
     }
-
-    println!("{:?}\n\n{}\n\n-----------\n\n", org.arena(), serde_json::to_string(&org).unwrap());
+    
     let mut writer = Vec::new();
     org.write_html(&mut writer).unwrap();
     fs::create_dir("out");
@@ -306,3 +315,4 @@ fn render_file(ids: &HashMap<String, String>, entry: Entry) -> Option<()> {
     file.write_all(&writer);
     Some(())
 }
+    
