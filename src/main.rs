@@ -102,7 +102,9 @@ fn init_db() {
 	});
     });
     for i in files {
-	render_file(&ids, i);
+	// render_file(&ids, i);
+	render_latex(i);
+	panic!();
     }
     log::trace!("Built in {:?}.", SystemTime::now().duration_since(now).unwrap());
 }
@@ -272,13 +274,16 @@ fn recursively_mutate_links_in_node(node: orgize::indextree::NodeId, org: &mut o
 	    let mut elem = org.arena_mut().get_mut(i)?.get_mut();
 	    match elem {
 		Element::Link(l) => if let Some(s) = sscanf::scanf!(l.path, "id:{}", String) {
-		    println!("{}", l.path);
-		    if let Some(path) = ids.get(&s) {			
+		    print!("{}", l.path);
+		    if let Some(path) = ids.get(&s) {
+			print!(" {}", path);
 			*elem = Element::Link(orgize::elements::Link {
 			    path: (String::from("file:")+path+&".html".to_string()).into(),
 			    desc: l.desc.clone()
 			});
 		    }
+		    print!("\n");
+		    println!("{:?}", org.arena_mut().get(i)?.get());
 		},		
 		_ => (),
 	    }
@@ -291,6 +296,7 @@ fn recursively_mutate_links_in_node(node: orgize::indextree::NodeId, org: &mut o
 
 fn render_file(ids: &HashMap<String, String>, entry: Entry) -> Option<()> {
     println!("{}", entry.path);
+    
     let mut org = orgize::Org::parse(&entry.contents);
     recursively_mutate_links_in_node(org.document().section_node()?, &mut org, ids);
     let mut stack: Vec<orgize::Headline> = Vec::new();
@@ -298,8 +304,7 @@ fn render_file(ids: &HashMap<String, String>, entry: Entry) -> Option<()> {
     for i in children { stack.push(i); }
     while stack.len() > 0 {
 	let cur = stack.pop()?;
-	println!("Processing headline: {}", cur.title(&org).raw);
-	
+	println!("Processing headline: {}", cur.title(&org).raw);	
 	recursively_mutate_links_in_node(cur.title_node(), &mut org, ids);
 	recursively_mutate_links_in_node(cur.section_node()?, &mut org, ids);
 	let children: Vec<orgize::Headline> = cur.children(&org).collect();
@@ -311,8 +316,27 @@ fn render_file(ids: &HashMap<String, String>, entry: Entry) -> Option<()> {
     org.write_html(&mut writer).unwrap();
     fs::create_dir("out");
     // FIXME Hardcoded constants bad
-    let mut file = fs::File::create(String::from("out/") + &entry.path[..entry.path.len()-3] + "html").unwrap();
-    file.write_all(&writer);
+    // let mut file = fs::File::create(String::from("out/") + &entry.path[..entry.path.len()-3] + "html").unwrap();
+    // file.write_all(&writer);
     Some(())
 }
-    
+
+fn render_latex(entry: Entry) {
+    let mut doc = latex::Document::new(latex::DocumentClass::Article);
+    let mut org = orgize::Org::parse(&entry.contents);
+    let mut cur_section = latex::Section::new("");
+    for i in org.iter() {
+	if let orgize::Event::Start(e) = i {
+	    match e {
+		Element::Title(t) => {
+		    doc.push(cur_section);
+		    cur_section = latex::Section::new(&t.raw);
+		}
+		Element::Text { value } => {cur_section.push(value.as_ref());},
+		_ => (),
+	    }
+	}
+    }
+    println!("{}", latex::print(&doc).unwrap());
+
+}
